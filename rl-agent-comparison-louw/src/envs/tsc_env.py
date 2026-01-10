@@ -47,6 +47,9 @@ class SingleIntersectionTSCEnv(gym.Env):
         max_sim_time_s: int = 300,
         tls_id: str | None = None,
         seed: int | None = 0,
+        green_phase_indices: list[int] | None = None,
+        yellow_phase_map: dict[tuple[int, int], int] | None = None,
+        yellow_duration_s: int = 3,
     ) -> None:
         """Initialize the TSC environment.
 
@@ -57,6 +60,11 @@ class SingleIntersectionTSCEnv(gym.Env):
             max_sim_time_s: Maximum simulation time in seconds (default 300 for dev).
             tls_id: Traffic light ID. If None, auto-discover first TLS in network.
             seed: Random seed for SUMO simulation reproducibility. None for stochastic.
+            green_phase_indices: List of SUMO phase indices that are green phases.
+                Default: [0, 2] for standard 4-phase TLS.
+            yellow_phase_map: Mapping from (from_green, to_green) to yellow phase index.
+                Default: {(0, 2): 1, (2, 0): 3} for standard 4-phase TLS.
+            yellow_duration_s: Duration of yellow phase in seconds. Default: 3.
         """
         super().__init__()
 
@@ -82,12 +90,45 @@ class SingleIntersectionTSCEnv(gym.Env):
         # Probe SUMO to discover TLS metadata and set proper spaces
         self.tls_id, self._controlled_lanes, self._n_phases = self._probe_metadata()
 
+        # Initialize green phase configuration
+        self._green_phase_indices = (
+            green_phase_indices if green_phase_indices is not None else [0, 2]
+        )
+        self._yellow_phase_map = (
+            yellow_phase_map if yellow_phase_map is not None else {(0, 2): 1, (2, 0): 3}
+        )
+        self._yellow_duration_s = yellow_duration_s
+
+        # Validate green phase configuration
+        for gp in self._green_phase_indices:
+            if gp < 0 or gp >= self._n_phases:
+                raise ValueError(
+                    f"Invalid green phase index {gp}. Must be in [0, {self._n_phases - 1}]."
+                )
+        for (from_g, to_g), yellow in self._yellow_phase_map.items():
+            if from_g not in self._green_phase_indices:
+                raise ValueError(f"Yellow map key {from_g} not in green_phase_indices.")
+            if to_g not in self._green_phase_indices:
+                raise ValueError(f"Yellow map key {to_g} not in green_phase_indices.")
+            if yellow < 0 or yellow >= self._n_phases:
+                raise ValueError(f"Invalid yellow phase index {yellow}.")
+        if self._yellow_duration_s > self.decision_interval_s:
+            raise ValueError(
+                f"yellow_duration_s ({self._yellow_duration_s}) must be <= "
+                f"decision_interval_s ({self.decision_interval_s})."
+            )
+
+        # Track current green phase (agent-space index)
+        self._current_green_idx: int = 0
+
         # Set proper spaces based on discovered metadata
         n_lanes = len(self._controlled_lanes)
         self.observation_space = spaces.Box(
             low=0.0, high=np.inf, shape=(n_lanes,), dtype=np.float32
         )
-        self.action_space = spaces.Discrete(self._n_phases)
+        # Action space is now green phases only (not all SUMO phases)
+        self._n_green_actions = len(self._green_phase_indices)
+        self.action_space = spaces.Discrete(self._n_green_actions)
 
     def _import_traci(self):
         """Import TraCI module."""
@@ -195,6 +236,35 @@ class SingleIntersectionTSCEnv(gym.Env):
             raise RuntimeError(f"No program logics found for TLS '{self.tls_id}'.")
         return len(logics[0].phases)
 
+    def _action_to_green_phase(self, action: int) -> int:
+        """Map agent action index to SUMO green phase index.
+
+        Args:
+            action: Agent action (0 to n_green_actions - 1).
+
+        Returns:
+            SUMO phase index (e.g., 0 or 2 for green phases).
+        """
+        return self._green_phase_indices[action]
+
+    def _yellow_to_next_green(self, yellow_phase: int) -> int:
+        """Given a yellow phase, return the green phase that follows it.
+
+        For this TLS: yellow 1 follows green 0 and leads to green 2,
+                      yellow 3 follows green 2 and leads to green 0.
+
+        Args:
+            yellow_phase: SUMO yellow phase index.
+
+        Returns:
+            SUMO green phase index that follows the yellow.
+        """
+        for (from_green, to_green), yellow in self._yellow_phase_map.items():
+            if yellow == yellow_phase:
+                return to_green
+        # Fallback: return first green
+        return self._green_phase_indices[0]
+
     def _get_observation(self, traci) -> np.ndarray:
         """Compute observation: halting vehicle count per controlled lane.
 
@@ -282,7 +352,17 @@ class SingleIntersectionTSCEnv(gym.Env):
         self._end_time = float(self.max_sim_time_s)
 
         # Initialize phase tracking (TLS metadata already discovered in __init__)
-        self._current_phase = traci.trafficlight.getPhase(self.tls_id)
+        initial_phase = traci.trafficlight.getPhase(self.tls_id)
+
+        # If starting in a yellow phase, advance to the next green
+        if initial_phase not in self._green_phase_indices:
+            next_green = self._yellow_to_next_green(initial_phase)
+            traci.trafficlight.setPhase(self.tls_id, next_green)
+            initial_phase = next_green
+
+        # Set current phase tracking
+        self._current_phase = initial_phase
+        self._current_green_idx = self._green_phase_indices.index(initial_phase)
         self._time_since_phase_start = 0.0
 
         # Get initial observation
@@ -293,7 +373,11 @@ class SingleIntersectionTSCEnv(gym.Env):
             "tls_id": self.tls_id,
             "controlled_lanes": self._controlled_lanes,
             "n_phases": self._n_phases,
+            "n_green_actions": self._n_green_actions,
+            "green_phase_indices": self._green_phase_indices,
             "phase": self._current_phase,
+            "current_green": self._green_phase_indices[self._current_green_idx],
+            "current_green_action": self._current_green_idx,
         }
 
         return obs, info
@@ -301,10 +385,15 @@ class SingleIntersectionTSCEnv(gym.Env):
     def step(
         self, action: int
     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-        """Execute one agent step in the environment.
+        """Execute one agent step in the environment with automatic yellow insertion.
+
+        The agent selects a green phase action (0 to n_green_actions-1). If a phase
+        change is requested and allowed (min_green satisfied), the environment
+        automatically inserts the appropriate yellow transition before switching
+        to the target green phase.
 
         Args:
-            action: Phase index to switch to (0 to n_phases-1).
+            action: Green phase action index (0 to n_green_actions-1).
 
         Returns:
             Tuple of (observation, reward, terminated, truncated, info).
@@ -316,21 +405,50 @@ class SingleIntersectionTSCEnv(gym.Env):
         # Switch to our connection (important with multiple envs)
         traci.switch(self._connection_label)
 
-        # Check if phase change is allowed (min green constraint)
+        # Convert agent action to target SUMO green phase
+        target_green = self._action_to_green_phase(action)
+        current_green = self._green_phase_indices[self._current_green_idx]
+
+        # Track what happens this step
         phase_changed = False
-        if self._time_since_phase_start >= self.min_green_s:
-            if action != self._current_phase:
-                traci.trafficlight.setPhase(self.tls_id, action)
-                self._current_phase = action
+        yellow_used = False
+        remaining_steps = int(self.decision_interval_s)
+
+        # Check if phase change is requested and allowed (min green constraint)
+        if target_green != current_green and self._time_since_phase_start >= self.min_green_s:
+            # Phase change needed - insert yellow first
+            yellow_phase = self._yellow_phase_map.get((current_green, target_green))
+
+            if yellow_phase is not None:
+                # Set yellow phase
+                traci.trafficlight.setPhase(self.tls_id, yellow_phase)
+                yellow_used = True
+
+                # Step through yellow duration
+                yellow_steps = min(self._yellow_duration_s, remaining_steps)
+                for _ in range(yellow_steps):
+                    traci.simulationStep()
+                    remaining_steps -= 1
+
+                # Now set the target green phase
+                traci.trafficlight.setPhase(self.tls_id, target_green)
+                self._current_green_idx = self._green_phase_indices.index(target_green)
+                self._current_phase = target_green
+                self._time_since_phase_start = 0.0
+                phase_changed = True
+            else:
+                # No yellow mapping exists - direct switch (shouldn't happen with proper config)
+                traci.trafficlight.setPhase(self.tls_id, target_green)
+                self._current_green_idx = self._green_phase_indices.index(target_green)
+                self._current_phase = target_green
                 self._time_since_phase_start = 0.0
                 phase_changed = True
 
-        # Advance simulation by decision_interval_s (1-second steps)
+        # Step remaining simulation time in current green phase
         # Accumulate arrived/departed across sub-steps
-        steps = int(self.decision_interval_s)
         step_arrived = 0
         step_departed = 0
-        for _ in range(steps):
+        for _ in range(remaining_steps):
             traci.simulationStep()
             self._time_since_phase_start += 1.0
             step_arrived += traci.simulation.getArrivedNumber()
@@ -352,11 +470,15 @@ class SingleIntersectionTSCEnv(gym.Env):
 
         truncated = False
 
-        # Build info dict
+        # Build info dict with green phase tracking
         info = {
             "sim_time": sim_time,
             "phase": self._current_phase,
+            "current_green": self._green_phase_indices[self._current_green_idx],
+            "current_green_action": self._current_green_idx,
+            "target_green": target_green,
             "phase_changed": phase_changed,
+            "yellow_used": yellow_used,
             "time_since_phase_start": self._time_since_phase_start,
             "halting": obs.tolist(),
             "total_wait": -reward,  # Positive waiting time for logging

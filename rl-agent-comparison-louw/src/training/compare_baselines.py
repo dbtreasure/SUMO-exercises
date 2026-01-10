@@ -149,7 +149,7 @@ def main() -> None:
     print(f"Config: {args.config}")
     print(f"Eval seed: {eval_seed}")
     print(f"TLS ID: {tls_id}")
-    print(f"Phases: {n_actions}")
+    print(f"Green actions: {n_actions}")
     print(f"Episodes per agent: {args.n_episodes}")
     print("=" * 60)
 
@@ -180,19 +180,17 @@ def main() -> None:
     results["random"] = evaluate_agent(random_agent, env, args.n_episodes)
     print_metrics("random", results["random"])
 
-    # 3. Fixed cycle (alternating phases 0,2 for 4-phase, matching default ~40s per phase)
+    # 3. Fixed cycle (alternating green actions, matching default ~40s per phase)
     print("\nEvaluating fixed cycle agent...")
-    # For 4-phase intersection, alternate between opposing directions
+    # With green-only action space: action 0 -> N-S green, action 1 -> E-W green
     # With decision_interval=5s, steps_per_phase=8 gives 40s per phase (close to default 42s)
-    if n_actions == 4:
-        cycle_phases = [0, 2]  # N-S green then E-W green
-    else:
-        cycle_phases = [0, 1]  # Simple 2-phase
+    cycle_phases = list(range(n_actions))  # [0, 1] for 2-action space
     fixed_agent = FixedCycleAgent(n_actions, cycle_phases=cycle_phases, steps_per_phase=8)
     results["fixed_cycle"] = evaluate_agent(fixed_agent, env, args.n_episodes, log_phases=True)
     print_metrics("fixed_cycle", results["fixed_cycle"])
 
     # 4. Max queue greedy
+    # With green-only action space, uses modulo mapping: lane_idx % n_actions -> green_action
     print("\nEvaluating max-queue greedy agent...")
     greedy_agent = MaxQueueAgent(n_actions)
     results["max_queue"] = evaluate_agent(greedy_agent, env, args.n_episodes)

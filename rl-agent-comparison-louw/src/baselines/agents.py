@@ -103,21 +103,23 @@ class MaxQueueAgent:
     If a trained agent can't beat this, the learning may not be effective.
     """
 
-    def __init__(self, n_actions: int, lane_to_phase_map: dict[int, int] | None = None) -> None:
+    def __init__(
+        self, n_actions: int, lane_to_green_action_map: dict[int, int] | None = None
+    ) -> None:
         """Initialize max queue agent.
 
         Args:
-            n_actions: Number of possible actions (phases).
-            lane_to_phase_map: Maps lane index to phase that gives it green.
-                              If None, assumes lane i maps to phase i % n_actions.
+            n_actions: Number of possible green actions (not total SUMO phases).
+            lane_to_green_action_map: Maps lane index to green action that serves it.
+                If None, assumes lane i maps to action i % n_actions.
         """
         self.n_actions = n_actions
-        self.lane_to_phase_map = lane_to_phase_map
+        self.lane_to_green_action_map = lane_to_green_action_map
 
     def predict(
         self, observation: np.ndarray, deterministic: bool = True
     ) -> tuple[np.ndarray, None]:
-        """Select phase for lane with longest queue.
+        """Select green action for lane with longest queue.
 
         Args:
             observation: Queue lengths per lane.
@@ -128,8 +130,8 @@ class MaxQueueAgent:
         """
         max_queue_lane = int(np.argmax(observation))
 
-        if self.lane_to_phase_map is not None:
-            action = self.lane_to_phase_map.get(max_queue_lane, 0)
+        if self.lane_to_green_action_map is not None:
+            action = self.lane_to_green_action_map.get(max_queue_lane, 0)
         else:
             action = max_queue_lane % self.n_actions
 
