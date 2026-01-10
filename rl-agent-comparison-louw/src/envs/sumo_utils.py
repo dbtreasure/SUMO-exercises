@@ -13,8 +13,18 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Store the SUMO subprocess handle for reliable cleanup
-_sumo_process: subprocess.Popen[bytes] | None = None
+# Store the SUMO subprocess handles for reliable cleanup (keyed by label)
+_sumo_processes: dict[str, subprocess.Popen[bytes] | None] = {}
+
+# Counter for generating unique labels
+_label_counter = 0
+
+
+def generate_unique_label() -> str:
+    """Generate a unique TraCI connection label."""
+    global _label_counter
+    _label_counter += 1
+    return f"env_{_label_counter}"
 
 
 def get_sumo_tools_path() -> str:
@@ -71,24 +81,37 @@ def start_sumo(
     sumocfg_path: str,
     gui: bool = False,
     seed: int | None = None,
-    label: str = "default",
+    label: str | None = None,
     override_end_s: int | None = None,
-) -> None:
+    auto_start: bool = True,
+    gui_delay: int | None = None,
+) -> str:
     """Start a SUMO simulation via TraCI.
 
     Args:
         sumocfg_path: Path to .sumocfg file (relative or absolute).
         gui: If True, use sumo-gui; otherwise use headless sumo.
         seed: Random seed for reproducibility. If None, SUMO uses its default.
-        label: TraCI connection label (for multiple connections).
+        label: TraCI connection label. If None, generates unique label.
         override_end_s: If set, override simulation end time (seconds).
+        auto_start: If True, simulation starts immediately. If False (GUI mode),
+                   user controls play/pause/step manually.
+        gui_delay: Delay between simulation steps in ms (GUI mode only).
+                  Higher = slower. 0 = max speed. 100-500 good for watching.
+
+    Returns:
+        The connection label used.
 
     Raises:
         FileNotFoundError: If sumocfg_path doesn't exist.
         EnvironmentError: If SUMO binary cannot be found.
     """
-    global _sumo_process
+    global _sumo_processes
     traci = _get_traci()
+
+    # Generate unique label if not provided
+    if label is None:
+        label = generate_unique_label()
 
     # Validate config file exists
     cfg_path = Path(sumocfg_path)
@@ -103,7 +126,6 @@ def start_sumo(
         sumo_binary,
         "-c",
         str(cfg_path.resolve()),
-        "--start",  # Start simulation immediately (for GUI)
         "--quit-on-end",  # Exit when simulation ends
         # Suppress logging for faster/quieter runs
         "--no-step-log",
@@ -113,6 +135,12 @@ def start_sumo(
         "--no-warnings",
         "true",
     ]
+
+    if auto_start:
+        cmd.append("--start")  # Start simulation immediately
+
+    if gui and gui_delay is not None:
+        cmd.extend(["--delay", str(gui_delay)])
 
     if seed is not None:
         cmd.extend(["--seed", str(seed)])
@@ -124,36 +152,43 @@ def start_sumo(
     # traci.start returns (port, sumoProcess) tuple
     result = traci.start(cmd, label=label)
     if isinstance(result, tuple) and len(result) >= 2:
-        _sumo_process = result[1]
+        _sumo_processes[label] = result[1]
     else:
-        _sumo_process = None
+        _sumo_processes[label] = None
+
+    return label
 
 
-def close_sumo(timeout: float = 0.5) -> None:
+def close_sumo(label: str | None = None, timeout: float = 0.5) -> None:
     """Safely close the TraCI connection and terminate SUMO subprocess.
 
     Args:
+        label: TraCI connection label to close. If None, closes current connection.
         timeout: Seconds to wait for graceful shutdown before force-killing.
     """
-    global _sumo_process
+    global _sumo_processes
     traci = _get_traci()
 
     # Try graceful TraCI close
     try:
+        if label is not None:
+            traci.switch(label)
         traci.close()
     except Exception:
         pass  # Ignore errors on close
 
     # Force-kill subprocess if still alive
-    if _sumo_process is not None and hasattr(_sumo_process, "wait"):
-        try:
-            _sumo_process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _sumo_process.terminate()
+    if label is not None and label in _sumo_processes:
+        proc = _sumo_processes.get(label)
+        if proc is not None and hasattr(proc, "wait"):
             try:
-                _sumo_process.wait(timeout=0.5)
+                proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                _sumo_process.kill()
-        except Exception:
-            pass  # Process already exited
-        _sumo_process = None
+                proc.terminate()
+                try:
+                    proc.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            except Exception:
+                pass  # Process already exited
+        del _sumo_processes[label]

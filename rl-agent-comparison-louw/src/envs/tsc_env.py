@@ -46,7 +46,7 @@ class SingleIntersectionTSCEnv(gym.Env):
         min_green_s: float = 10.0,
         max_sim_time_s: int = 300,
         tls_id: str | None = None,
-        seed: int = 0,
+        seed: int | None = 0,
     ) -> None:
         """Initialize the TSC environment.
 
@@ -56,7 +56,7 @@ class SingleIntersectionTSCEnv(gym.Env):
             min_green_s: Minimum seconds a phase must be active before switching.
             max_sim_time_s: Maximum simulation time in seconds (default 300 for dev).
             tls_id: Traffic light ID. If None, auto-discover first TLS in network.
-            seed: Random seed for SUMO simulation reproducibility.
+            seed: Random seed for SUMO simulation reproducibility. None for stochastic.
         """
         super().__init__()
 
@@ -65,26 +65,29 @@ class SingleIntersectionTSCEnv(gym.Env):
         self.min_green_s = min_green_s
         self.max_sim_time_s = max_sim_time_s
         self._tls_id_config = tls_id
-        self._seed = seed
-
-        # Will be set after reset()
-        self.tls_id: str = ""
-        self._controlled_lanes: list[str] = []
-        self._n_phases: int = 0
-        self._end_time: float = 3600.0
-        self._time_since_phase_start: float = 0.0
-        self._current_phase: int = 0
-        self._traci = None
-
-        # Placeholder spaces (updated after first reset)
-        self.observation_space = spaces.Box(
-            low=0.0, high=np.inf, shape=(1,), dtype=np.float32
-        )
-        self.action_space = spaces.Discrete(1)
+        self._base_seed: int | None = seed
+        self._episode_count: int = 0
 
         # Validate config file exists
         if not Path(self.sumocfg_path).exists():
             raise FileNotFoundError(f"SUMO config not found: {self.sumocfg_path}")
+
+        # Runtime state (set during reset)
+        self._end_time: float = 3600.0
+        self._time_since_phase_start: float = 0.0
+        self._current_phase: int = 0
+        self._traci = None
+        self._connection_label: str | None = None
+
+        # Probe SUMO to discover TLS metadata and set proper spaces
+        self.tls_id, self._controlled_lanes, self._n_phases = self._probe_metadata()
+
+        # Set proper spaces based on discovered metadata
+        n_lanes = len(self._controlled_lanes)
+        self.observation_space = spaces.Box(
+            low=0.0, high=np.inf, shape=(n_lanes,), dtype=np.float32
+        )
+        self.action_space = spaces.Discrete(self._n_phases)
 
     def _import_traci(self):
         """Import TraCI module."""
@@ -92,6 +95,48 @@ class SingleIntersectionTSCEnv(gym.Env):
         import traci
 
         return traci
+
+    def _probe_metadata(self) -> tuple[str, list[str], int]:
+        """Probe SUMO briefly to discover TLS metadata.
+
+        This starts SUMO, queries TLS/lane information, then closes.
+        Called during __init__ to set action_space and observation_space
+        before any reset() call.
+
+        Returns:
+            Tuple of (tls_id, controlled_lanes, n_phases).
+        """
+        traci = self._import_traci()
+
+        # Start SUMO briefly (seed doesn't matter for metadata probe)
+        label = start_sumo(
+            self.sumocfg_path,
+            gui=False,
+            seed=0,
+            override_end_s=self.max_sim_time_s,
+        )
+        traci.switch(label)
+
+        try:
+            # Discover TLS
+            tls_id = self._discover_tls(traci)
+
+            # Get controlled lanes
+            all_lanes = traci.trafficlight.getControlledLanes(tls_id)
+            controlled_lanes = sorted(
+                set(lane for lane in all_lanes if not lane.startswith(":"))
+            )
+
+            # Get number of phases
+            logics = traci.trafficlight.getAllProgramLogics(tls_id)
+            if not logics:
+                raise RuntimeError(f"No program logics found for TLS '{tls_id}'.")
+            n_phases = len(logics[0].phases)
+
+            return tls_id, controlled_lanes, n_phases
+        finally:
+            # Always close the probe connection
+            close_sumo(label=label)
 
     def _discover_tls(self, traci) -> str:
         """Discover the TLS ID from the network.
@@ -169,9 +214,10 @@ class SingleIntersectionTSCEnv(gym.Env):
         return np.array(halting, dtype=np.float32)
 
     def _get_reward(self, traci) -> float:
-        """Compute reward: negative sum of waiting times.
+        """Compute reward: negative sum of waiting times for halting vehicles.
 
-        Paper-faithful: R_t = -sum(waiting_time(veh_i)) for vehicles on controlled lanes.
+        Paper-faithful: R_t = -sum(waiting_time(veh_i)) for halting vehicles
+        on controlled lanes. Halting = speed <= 0.1 m/s (SUMO default threshold).
 
         Args:
             traci: TraCI module.
@@ -179,13 +225,12 @@ class SingleIntersectionTSCEnv(gym.Env):
         Returns:
             Negative total waiting time (more negative = worse).
         """
-        # Collect unique vehicle IDs across all controlled lanes
-        vehicle_ids: set[str] = set()
+        total_wait = 0.0
         for lane in self._controlled_lanes:
-            vehicle_ids.update(traci.lane.getLastStepVehicleIDs(lane))
-
-        # Sum waiting times
-        total_wait = sum(traci.vehicle.getWaitingTime(vid) for vid in vehicle_ids)
+            for vid in traci.lane.getLastStepVehicleIDs(lane):
+                speed = traci.vehicle.getSpeed(vid)
+                if speed <= 0.1:  # Halting threshold (m/s)
+                    total_wait += traci.vehicle.getWaitingTime(vid)
         return -total_wait
 
     def reset(
@@ -208,35 +253,35 @@ class SingleIntersectionTSCEnv(gym.Env):
         # Close any existing simulation
         self.close()
 
-        # Use provided seed or fall back to init seed
-        sim_seed = seed if seed is not None else self._seed
+        # Determine simulation seed:
+        # - If seed provided to reset(), use it directly
+        # - Otherwise use base_seed + episode_count for variation per episode
+        # - If base_seed is None, sim_seed stays None (SUMO uses random)
+        if seed is not None:
+            sim_seed = seed
+        elif self._base_seed is not None:
+            sim_seed = self._base_seed + self._episode_count
+        else:
+            sim_seed = None
+
+        self._episode_count += 1
 
         # Start SUMO with configured end time
         traci = self._import_traci()
-        start_sumo(
+        self._connection_label = start_sumo(
             self.sumocfg_path,
             gui=False,
             seed=sim_seed,
             override_end_s=self.max_sim_time_s,
         )
+        # Switch to our connection
+        traci.switch(self._connection_label)
         self._traci = traci
 
-        # Discover TLS and lanes
-        self.tls_id = self._discover_tls(traci)
-        self._controlled_lanes = self._get_controlled_lanes(traci)
-        self._n_phases = self._get_n_phases(traci)
-
-        # Use configured end time
+        # Set configured end time
         self._end_time = float(self.max_sim_time_s)
 
-        # Update spaces now that we know dimensions
-        n_lanes = len(self._controlled_lanes)
-        self.observation_space = spaces.Box(
-            low=0.0, high=np.inf, shape=(n_lanes,), dtype=np.float32
-        )
-        self.action_space = spaces.Discrete(self._n_phases)
-
-        # Initialize phase tracking
+        # Initialize phase tracking (TLS metadata already discovered in __init__)
         self._current_phase = traci.trafficlight.getPhase(self.tls_id)
         self._time_since_phase_start = 0.0
 
@@ -264,10 +309,12 @@ class SingleIntersectionTSCEnv(gym.Env):
         Returns:
             Tuple of (observation, reward, terminated, truncated, info).
         """
-        if self._traci is None:
+        if self._traci is None or self._connection_label is None:
             raise RuntimeError("Environment not initialized. Call reset() first.")
 
         traci = self._traci
+        # Switch to our connection (important with multiple envs)
+        traci.switch(self._connection_label)
 
         # Check if phase change is allowed (min green constraint)
         phase_changed = False
@@ -279,10 +326,15 @@ class SingleIntersectionTSCEnv(gym.Env):
                 phase_changed = True
 
         # Advance simulation by decision_interval_s (1-second steps)
+        # Accumulate arrived/departed across sub-steps
         steps = int(self.decision_interval_s)
+        step_arrived = 0
+        step_departed = 0
         for _ in range(steps):
             traci.simulationStep()
             self._time_since_phase_start += 1.0
+            step_arrived += traci.simulation.getArrivedNumber()
+            step_departed += traci.simulation.getDepartedNumber()
 
         # Get current simulation time
         sim_time = traci.simulation.getTime()
@@ -308,12 +360,15 @@ class SingleIntersectionTSCEnv(gym.Env):
             "time_since_phase_start": self._time_since_phase_start,
             "halting": obs.tolist(),
             "total_wait": -reward,  # Positive waiting time for logging
+            "arrived": step_arrived,
+            "departed": step_departed,
         }
 
         return obs, reward, terminated, truncated, info
 
     def close(self) -> None:
         """Close the SUMO simulation."""
-        if self._traci is not None:
-            close_sumo()
+        if self._traci is not None and self._connection_label is not None:
+            close_sumo(label=self._connection_label)
             self._traci = None
+            self._connection_label = None
