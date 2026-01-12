@@ -1,6 +1,5 @@
 import random
 from collections import deque
-from multiprocessing import Lock
 
 import gymnasium as gym
 import numpy as np
