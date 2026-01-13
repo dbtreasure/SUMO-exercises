@@ -221,6 +221,22 @@ class DQNAgent:
             grad_clipped=did_clip,
         )
 
+    def get_q_stats(self, n_samples: int = 256) -> tuple[float, float] | None:
+        """Get mean and max Q-value magnitude from a sample of the replay buffer."""
+        if len(self.replay_buffer) < n_samples:
+            return None
+
+        batch = self.replay_buffer.sample(n_samples)
+        states = torch.FloatTensor(np.array([exp[0] for exp in batch]))
+
+        with torch.no_grad():
+            q_values = self.policy_net(states)
+            q_abs = q_values.abs()
+            mean_q = q_abs.mean().item()
+            max_q = q_abs.max().item()
+
+        return mean_q, max_q
+
     def decay_epsilon(self) -> None:
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 

@@ -5,6 +5,8 @@ description = "LunarLander-v2 reinforcement learning experiments"
 requires-python = ">=3.13"
 dependencies = [
     "gymnasium[box2d]==0.29.0",
+    "matplotlib>=3.10.8",
     "numpy>=2.4.1",
+    "pyyaml>=6.0.3",
     "torch>=2.9.1",
 ]

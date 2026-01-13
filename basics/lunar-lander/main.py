@@ -1,10 +1,20 @@
+import argparse
 import time
 from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
+import yaml
 
 from lunar_lander_dqn_agent import DQNAgent, TrainingLogger
+
+
+def load_config(config_path: str | None = None) -> dict:
+    """Load config from YAML file, defaulting to configs/default.yaml"""
+    default_path = Path(__file__).parent / "configs" / "default.yaml"
+    path = Path(config_path) if config_path else default_path
+    with open(path) as f:
+        return yaml.safe_load(f)
 
 
 def format_time(seconds: float) -> str:
@@ -17,15 +27,6 @@ def format_time(seconds: float) -> str:
     else:
         hours = seconds / 3600
         return f"{hours:.1f}h"
-
-
-# Training config
-TOTAL_STEPS = 5_000_000
-EVAL_EVERY = 25_000
-LOG_EVERY = 50
-CHECKPOINT_EVERY = 100_000
-TARGET_UPDATE_EVERY = 10_000  # Hard target network update (original DQN paper)
-CHECKPOINT_DIR = Path("checkpoints")
 
 
 def evaluate(agent: DQNAgent, n_episodes: int = 10) -> tuple[float, float]:
@@ -52,22 +53,45 @@ def evaluate(agent: DQNAgent, n_episodes: int = 10) -> tuple[float, float]:
 
 
 def main():
-    CHECKPOINT_DIR.mkdir(exist_ok=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default=None, help="Path to config YAML")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    print(f"Config: {args.config or 'default.yaml'}")
+    print(f"  learning_starts: {config['learning_starts']:,}")
+    print(f"  train_freq: {config['train_freq']}")
+    print(f"  gradient_steps: {config['gradient_steps']}")
+    print(f"  total_steps: {config['total_steps']:,}")
+
+    checkpoint_dir = Path(config["checkpoint_dir"])
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     env = gym.make("LunarLander-v2")
-    agent = DQNAgent(env=env)
+    agent = DQNAgent(
+        env=env,
+        learning_rate=config["learning_rate"],
+        gamma=config["gamma"],
+        epsilon_start=config["epsilon_start"],
+        epsilon_end=config["epsilon_end"],
+        epsilon_decay=config["epsilon_decay"],
+        buffer_size=config["buffer_size"],
+        batch_size=config["batch_size"],
+        max_grad_norm=config["max_grad_norm"],
+    )
     logger = TrainingLogger(window_size=100)
 
     total_steps = 0
+    updates_performed = 0
     episode = 0
     best_mean_reward = -float("inf")
     start_time = time.time()
 
     print("Starting training...", flush=True)
-    print(f"Target: {TOTAL_STEPS:,} steps", flush=True)
+    print(f"Target: {config['total_steps']:,} steps", flush=True)
     print("-" * 80, flush=True)
 
-    while total_steps < TOTAL_STEPS:
+    while total_steps < config["total_steps"]:
         state, _ = env.reset()
         episode_reward = 0.0
         episode_length = 0
@@ -84,11 +108,22 @@ def main():
                 state, action, float(reward), next_state, terminated
             )
 
-            result = agent.update()
-            if result is not None:
-                episode_losses.append(result.loss)
-                episode_grad_norms.append(result.grad_norm_preclip)
-                episode_clips.append(result.grad_clipped)
+            # Only update if: past warmup, on correct cadence, buffer has enough samples
+            if (
+                total_steps >= config["learning_starts"]
+                and total_steps % config["train_freq"] == 0
+                and len(agent.replay_buffer) >= config["batch_size"]
+            ):
+                step_losses = []
+                for _ in range(config["gradient_steps"]):
+                    result = agent.update()
+                    if result is not None:
+                        step_losses.append(result.loss)
+                        episode_grad_norms.append(result.grad_norm_preclip)
+                        episode_clips.append(result.grad_clipped)
+                updates_performed += config["gradient_steps"]
+                if step_losses:
+                    episode_losses.append(sum(step_losses) / len(step_losses))
 
             state = next_state
             episode_reward += float(reward)
@@ -97,29 +132,33 @@ def main():
             done = terminated or truncated
 
             # Hard target network update (original DQN paper approach)
-            if total_steps % TARGET_UPDATE_EVERY == 0:
+            if total_steps % config["target_update_every"] == 0:
                 agent.sync_target_network()
 
             # Check for periodic actions mid-episode
-            if total_steps % EVAL_EVERY == 0:
+            if total_steps % config["eval_every"] == 0:
                 mean_r, std_r = evaluate(agent, n_episodes=10)
+                updates_per_10k = (updates_performed / total_steps) * 10_000
+                q_stats = agent.get_q_stats()
+                q_str = f"Q(mean/max): {q_stats[0]:.1f}/{q_stats[1]:.1f}" if q_stats else "Q: N/A"
                 print(
-                    f"\n>>> EVAL @ {total_steps:,} steps: {mean_r:.1f} +/- {std_r:.1f}",
+                    f"\n>>> EVAL @ {total_steps:,} steps: {mean_r:.1f} +/- {std_r:.1f} | "
+                    f"Updates: {updates_performed:,} ({updates_per_10k:.0f}/10k) | {q_str}",
                     flush=True,
                 )
                 if mean_r > best_mean_reward:
                     best_mean_reward = mean_r
                     agent.save_checkpoint(
-                        str(CHECKPOINT_DIR / "best.pt"), episode, total_steps
+                        str(checkpoint_dir / "best.pt"), episode, total_steps
                     )
                     print("    New best! Saved checkpoint.", flush=True)
 
-            if total_steps % CHECKPOINT_EVERY == 0:
+            if total_steps % config["checkpoint_every"] == 0:
                 agent.save_checkpoint(
-                    str(CHECKPOINT_DIR / f"step_{total_steps}.pt"), episode, total_steps
+                    str(checkpoint_dir / f"step_{total_steps}.pt"), episode, total_steps
                 )
 
-            if total_steps >= TOTAL_STEPS:
+            if total_steps >= config["total_steps"]:
                 break
 
         # End of episode
@@ -141,13 +180,13 @@ def main():
         episode += 1
 
         # Periodic logging
-        if episode % LOG_EVERY == 0:
+        if episode % config["log_every"] == 0:
             stats = logger.get_stats()
             elapsed = time.time() - start_time
             steps_per_sec = total_steps / elapsed if elapsed > 0 else 0
-            remaining_steps = TOTAL_STEPS - total_steps
+            remaining_steps = config["total_steps"] - total_steps
             eta = remaining_steps / steps_per_sec if steps_per_sec > 0 else 0
-            progress = (total_steps / TOTAL_STEPS) * 100
+            progress = (total_steps / config["total_steps"]) * 100
 
             print(
                 f"Ep {episode:4d} | {progress:5.1f}% | Steps: {total_steps:7,} | "
@@ -164,7 +203,7 @@ def main():
     env.close()
 
     # Save final checkpoint
-    agent.save_checkpoint(str(CHECKPOINT_DIR / "final.pt"), episode, total_steps)
+    agent.save_checkpoint(str(checkpoint_dir / "final.pt"), episode, total_steps)
     total_time = time.time() - start_time
     print("-" * 80)
     print("Training complete!")
