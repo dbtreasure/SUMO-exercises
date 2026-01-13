@@ -49,6 +49,10 @@ Standard DQN updates the network after every environment step. This experiment e
 | balanced | 20,000 | 2 | 1 | ~490,000 |
 | warmup (default) | 20,000 | 4 | 1 | ~245,000 |
 | grad_steps_test | 20,000 | 4 | 4 | ~980,000 |
+| decorrelated_4x4_nowarmup | 0 | 4 | 4 | ~1,000,000 |
+| decorrelated_4x8_nowarmup | 0 | 4 | 8 | ~2,000,000 |
+
+**Clean test configs** (`decorrelated_*_nowarmup`): These configs remove the warmup period to isolate the effect of the decorrelated update schedule. The 4x4 config is compute-matched to baseline (~1M updates), while 4x8 doubles the update budget.
 
 ### Results
 

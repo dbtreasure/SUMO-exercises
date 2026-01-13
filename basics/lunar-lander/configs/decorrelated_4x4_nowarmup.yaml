@@ -1,0 +1,25 @@
+# Clean compute-matched test: same total updates as baseline, decorrelated batches
+# No warmup to isolate the effect of the update schedule itself
+
+# Training loop
+total_steps: 1_000_000
+checkpoint_dir: checkpoints/decorrelated_4x4_nowarmup
+eval_every: 25_000
+log_every: 50
+checkpoint_every: 100_000
+target_update_every: 10_000
+
+# Update schedule: 4 steps between updates, 4 gradient steps each = ~1 update/step
+learning_starts: 0
+train_freq: 4
+gradient_steps: 4
+
+# Agent hyperparameters (identical to baseline)
+learning_rate: 0.0001
+gamma: 0.999
+epsilon_start: 1.0
+epsilon_end: 0.02
+epsilon_decay: 0.9995
+buffer_size: 100_000
+batch_size: 64
+max_grad_norm: 10.0
