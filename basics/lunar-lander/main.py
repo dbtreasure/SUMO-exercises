@@ -58,7 +58,9 @@ def main():
     args = parser.parse_args()
 
     config = load_config(args.config)
-    print(f"Config: {args.config or 'default.yaml'}")
+    config_path = Path(args.config).resolve() if args.config else Path(__file__).parent / "configs" / "default.yaml"
+    print(f"Config: {config_path}")
+    print(f"  checkpoint_dir: {config['checkpoint_dir']}")
     print(f"  learning_starts: {config['learning_starts']:,}")
     print(f"  train_freq: {config['train_freq']}")
     print(f"  gradient_steps: {config['gradient_steps']}")
@@ -104,8 +106,9 @@ def main():
             action = agent.get_action(state)
             next_state, reward, terminated, truncated, _ = env.step(action)
 
+            done_flag = terminated or truncated
             agent.replay_buffer.push(
-                state, action, float(reward), next_state, terminated
+                state, action, float(reward), next_state, done_flag
             )
 
             # Only update if: past warmup, on correct cadence, buffer has enough samples
@@ -115,13 +118,15 @@ def main():
                 and len(agent.replay_buffer) >= config["batch_size"]
             ):
                 step_losses = []
+                updates_this_event = 0
                 for _ in range(config["gradient_steps"]):
                     result = agent.update()
                     if result is not None:
                         step_losses.append(result.loss)
                         episode_grad_norms.append(result.grad_norm_preclip)
                         episode_clips.append(result.grad_clipped)
-                updates_performed += config["gradient_steps"]
+                        updates_this_event += 1
+                updates_performed += updates_this_event
                 if step_losses:
                     episode_losses.append(sum(step_losses) / len(step_losses))
 
