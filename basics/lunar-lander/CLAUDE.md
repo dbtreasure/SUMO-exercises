@@ -93,13 +93,17 @@ gym.make(
 
 | Parameter | Range | Default | Notes |
 |-----------|-------|---------|-------|
-| learning_rate | 1e-4 to 1e-3 | 1e-4 | Best results near 1e-3 |
-| buffer_size | 100k to 1M | 1M | Memory vs diversity |
+| learning_rate | **5e-5 to 1e-4** | **5e-5** | **Lower is better with grad clipping** |
+| buffer_size | 100k to 1M | 100k | Memory vs diversity |
 | batch_size | 32 to 128 | 64 | Larger = more stable |
 | tau | 0.005 to 0.01 | 0.005 | Soft update coefficient |
 | target_update_interval | 5k to 20k | 10k | If using hard updates |
 | exploration_fraction | 0.1 to 0.5 | 0.1 | Epsilon decay duration |
-| exploration_final_eps | 0.01 to 0.1 | 0.05 | Final epsilon |
+| exploration_final_eps | 0.01 to 0.1 | 0.02 | Final epsilon |
+| max_grad_norm | 10 to 20 | 10 | Gradient clipping threshold |
+| loss_type | mse, huber | mse | MSE works best with lower LR |
+
+**Empirical finding:** LR 5e-5 + max_grad_norm 10 achieves score 237.65. The constant gradient clipping (100% clip rate) acts as an effective learning rate limiter. Huber loss reduces clipping but doesn't improve final score.
 
 ## Architecture
 
@@ -123,13 +127,15 @@ gym.make(
 
 Ranking is by (mean - std), so reducing variance matters as much as increasing mean:
 
-1. **Observation normalization** - use VecNormalize wrapper
-2. **Advantage normalization** - zero mean, unit variance
-3. **Gradient clipping** - max_grad_norm 0.5 or 1.0
-4. **Penultimate normalization** - normalize pre-output layer features
+1. **Lower learning rate** - LR 5e-5 reduces variance significantly vs 1e-4
+2. **Gradient clipping** - max_grad_norm 10 (100% clipping is fine with low LR)
+3. **Simple update schedule** - 1x1 (every step) beats aggressive schedules like 4x8
+4. **Observation normalization** - use VecNormalize wrapper
 5. **More eval episodes** - 20-50 episodes for reliable estimates
 6. **Deterministic evaluation** - no exploration noise
 7. **Multiple seeds** - train 5-10 agents, submit best (mean - std)
+
+**Empirical finding:** The 4x8 schedule (2x gradient updates) had mean 222 but std 72, yielding poor score 149. The 1x1 schedule with LR 5e-5 had mean 267 and std 29, yielding score 237.
 
 ## Tools
 
@@ -254,9 +260,20 @@ def clip_and_get_norm(parameters, max_grad_norm: float | None) -> tuple[float, b
 ```
 
 Usage in DQNAgent:
-- `max_grad_norm` parameter (default: 0.5, PPO-style)
+- `max_grad_norm` parameter (default: 10.0)
 - Call between `loss.backward()` and `optimizer.step()`
 - Returns `UpdateResult` with loss, grad_norm_preclip, and grad_clipped
+
+### Loss Function Selection
+The agent supports configurable loss functions via YAML config:
+```yaml
+loss_type: "mse"    # or "huber"
+huber_delta: 1.0    # threshold for Huber loss (default 1.0)
+```
+
+**MSE loss** (default): Standard squared error. With LR 5e-5 and max_grad_norm 10, achieves best results despite 100% gradient clipping.
+
+**Huber loss** (smooth_l1_loss): Clips large TD errors. Reduces gradient clipping from 99% to 7% but doesn't improve final score. Use if you want cleaner gradient diagnostics.
 
 ### Video Recording
 For recording evaluation runs:
@@ -294,3 +311,30 @@ env = make_vec_env("LunarLander-v2", n_envs=16)
 - 16 parallel envs recommended for diverse training experience
 - ~1M timesteps sufficient for >= 200, 2-5M for optimization
 - Leaderboard top scores use nearly identical configs - gains are marginal and variance-dependent
+
+## Best Known DQN Configuration
+
+Based on stability ablation experiments (see `reports/stability_ablation_report.md`):
+
+```yaml
+# Best config: MSE + LR 5e-5 → Score 237.65
+learning_rate: 0.00005      # Lower than typical 1e-4
+loss_type: "mse"            # Standard MSE, not Huber
+max_grad_norm: 10.0         # 100% clipping is fine
+train_freq: 1               # Update every step
+gradient_steps: 1           # One gradient step per update
+gamma: 0.999
+buffer_size: 100_000
+batch_size: 64
+target_update_every: 10_000
+epsilon_start: 1.0
+epsilon_end: 0.02
+epsilon_decay: 0.9995
+```
+
+**Key insight:** High gradient clipping (100%) with low LR works better than trying to reduce clipping via Huber loss or higher grad norm threshold. The clipping acts as an effective learning rate limiter.
+
+**What doesn't help:**
+- Huber loss (reduces clipping but not score)
+- Aggressive update schedules like 4x8 (more variance, worse score)
+- Higher max_grad_norm (reduces clipping but not score)

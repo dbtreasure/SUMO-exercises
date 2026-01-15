@@ -145,6 +145,8 @@ class DQNAgent:
         batch_size: int = 64,
         tau: float = 0.005,
         max_grad_norm: float | None = 10.0,
+        loss_type: str = "mse",
+        huber_delta: float = 1.0,
     ):
         self.env = env
         self.gamma = gamma
@@ -154,6 +156,8 @@ class DQNAgent:
         self.batch_size = batch_size
         self.tau = tau
         self.max_grad_norm = max_grad_norm
+        self.loss_type = loss_type
+        self.huber_delta = huber_delta
 
         assert env.observation_space.shape is not None
         assert isinstance(env.action_space, gym.spaces.Discrete)
@@ -203,7 +207,12 @@ class DQNAgent:
             next_q = self.target_net(next_states).gather(1, next_actions).squeeze(1)
             target_q = rewards + self.gamma * next_q * (1 - dones)
 
-        loss = nn.MSELoss()(current_q, target_q)
+        if self.loss_type == "huber":
+            loss = torch.nn.functional.smooth_l1_loss(
+                current_q, target_q, beta=self.huber_delta
+            )
+        else:
+            loss = torch.nn.functional.mse_loss(current_q, target_q)
 
         self.optimizer.zero_grad()
         loss.backward()

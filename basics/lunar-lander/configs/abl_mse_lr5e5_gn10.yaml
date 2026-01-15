@@ -1,0 +1,26 @@
+# Ablation: MSE loss with lower LR (5e-5)
+# Training loop
+total_steps: 1_000_000
+checkpoint_dir: checkpoints/abl_mse_lr5e5_gn10
+eval_every: 25_000
+log_every: 50
+checkpoint_every: 100_000
+target_update_every: 10_000
+
+# Warmup and update cadence (baseline schedule)
+learning_starts: 0
+train_freq: 1
+gradient_steps: 1
+
+# Stability changes
+loss_type: "mse"
+
+# Agent hyperparameters
+learning_rate: 0.00005
+gamma: 0.999
+epsilon_start: 1.0
+epsilon_end: 0.02
+epsilon_decay: 0.9995
+buffer_size: 100_000
+batch_size: 64
+max_grad_norm: 10.0

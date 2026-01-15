@@ -65,6 +65,10 @@ def main():
     print(f"  train_freq: {config['train_freq']}")
     print(f"  gradient_steps: {config['gradient_steps']}")
     print(f"  total_steps: {config['total_steps']:,}")
+    print(f"  loss_type: {config.get('loss_type', 'mse')}")
+    print(f"  huber_delta: {config.get('huber_delta', 1.0)}")
+    print(f"  learning_rate: {config['learning_rate']}")
+    print(f"  max_grad_norm: {config['max_grad_norm']}")
 
     checkpoint_dir = Path(config["checkpoint_dir"])
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -80,6 +84,8 @@ def main():
         buffer_size=config["buffer_size"],
         batch_size=config["batch_size"],
         max_grad_norm=config["max_grad_norm"],
+        loss_type=config.get("loss_type", "mse"),
+        huber_delta=config.get("huber_delta", 1.0),
     )
     logger = TrainingLogger(window_size=100)
 

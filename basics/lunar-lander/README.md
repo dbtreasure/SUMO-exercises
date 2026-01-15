@@ -14,8 +14,14 @@ lunar-lander/
 │   ├── baseline.yaml          # Original DQN (no warmup, train_freq=1)
 │   ├── balanced.yaml          # Middle ground (train_freq=2)
 │   ├── warmup_only.yaml       # Isolate warmup effect (train_freq=1)
-│   └── grad_steps_test.yaml   # Decorrelated sampling (4x4)
-└── checkpoints/               # Saved model checkpoints
+│   ├── grad_steps_test.yaml   # Decorrelated sampling (4x4)
+│   ├── abl_huber_*.yaml       # Stability ablation configs
+│   └── abl_mse_*.yaml         # LR ablation configs
+├── checkpoints/               # Saved model checkpoints
+├── reports/                   # Experiment reports
+│   └── stability_ablation_report.md
+└── scripts/
+    └── run_ablation.sh        # Helper script for running ablations
 ```
 
 ## Running Experiments
@@ -145,6 +151,67 @@ This is a training artifact, not a bug. More training or reward shaping could ad
 2. Would warmup help more with prioritized replay or larger batch sizes?
 3. Is there an optimal train_freq for this environment given wall-clock constraints?
 4. Does the post-landing hovering behavior affect evaluation scores significantly?
+
+---
+
+## Experiment: Gradient Stability & Loss Function Ablations
+
+### Background
+
+Our baseline DQN exhibited **99-100% gradient clipping** with pre-clip norms of 150-200 (vs threshold of 10). When we tried a 4x8 update schedule (8 gradient steps every 4 env steps), training collapsed completely.
+
+We hypothesized that reducing gradient magnitude via:
+1. **Huber loss** (smooth_l1_loss) - clips large TD errors
+2. **Lower learning rate** - reduces gradient magnitude
+3. **Higher max_grad_norm threshold** - allows larger updates
+
+### Code Changes
+
+Added configurable loss function to the agent:
+```yaml
+loss_type: "mse" | "huber"  # Default: mse
+huber_delta: 1.0            # Huber loss threshold
+```
+
+### Configurations Tested
+
+| Config | Loss | LR | max_grad_norm | Schedule |
+|--------|------|----|---------------|----------|
+| abl_huber_lr1e4_gn10 | Huber | 1e-4 | 10 | 1x1 |
+| abl_mse_lr5e5_gn10 | MSE | 5e-5 | 10 | 1x1 |
+| abl_huber_lr5e5_gn20 | Huber | 5e-5 | 20 | 1x1 |
+| abl_huber_lr5e5_gn20_4x8 | Huber | 5e-5 | 20 | 4x8 |
+
+### Results
+
+| Config | Final Mean ± Std | Score | Clip % | Status |
+|--------|------------------|-------|--------|--------|
+| **MSE + LR 5e-5 + GN 10** | 266.94 ± 29.29 | **237.65** | 100% | PASS |
+| Huber + LR 5e-5 + GN 20 | 244.63 ± 39.16 | **205.47** | 7% | PASS |
+| Huber + LR 1e-4 + GN 10 | 233.02 ± 44.50 | 188.52 | 96% | FAIL |
+| Huber + LR 5e-5 + GN 20 (4x8) | 222.12 ± 72.23 | 149.89 | 22% | FAIL |
+
+### Key Findings
+
+#### 1. Lower learning rate is the primary factor
+Reducing LR from 1e-4 → 5e-5 improved final score significantly. The MSE + LR 5e-5 config achieved best score (237.65) despite 100% gradient clipping.
+
+#### 2. Huber loss reduces gradient magnitude but doesn't improve score
+Huber + higher grad norm (20) reduced clipping from 99% → 7%, but didn't translate to better performance. The gradient clipping at GN=10 with MSE loss appears to act as an effective learning rate limiter.
+
+#### 3. Stabilization enabled 4x8 without collapse
+The previously-collapsing 4x8 schedule (2M gradient updates) now runs to completion with Huber + LR 5e-5 + GN 20. However, it didn't outperform the simpler 1x1 baseline.
+
+#### 4. More updates ≠ better performance
+The 4x8 schedule performed 2M gradient updates (vs 1M for 1x1) but achieved worse final score (149.89 vs 237.65) with higher variance.
+
+### Recommendations
+
+- **Use MSE + LR 5e-5 + GN 10 as baseline** - best score, simplest config
+- **Abandon aggressive update schedules** - no benefit despite 2x compute cost
+- **Don't fear high clip fractions** - 100% clipping with lower LR works well
+
+See `reports/stability_ablation_report.md` for the full report.
 
 ## Implementation Details
 
