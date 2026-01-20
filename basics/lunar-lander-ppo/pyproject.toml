@@ -1,0 +1,22 @@
+[project]
+name = "lunar-lander-ppo"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "gymnasium[box2d]==0.29.0",
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+    "pyyaml>=6.0",
+    "matplotlib>=3.7.0",
+    "pydantic>=2.0",
+    "tensorboard>=2.14",
+    "pandas>=2.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
