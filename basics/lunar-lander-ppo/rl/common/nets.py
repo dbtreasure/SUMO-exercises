@@ -110,3 +110,18 @@ class CategoricalPolicy(nn.Module):
         log_probs = dist.log_prob(actions)
         entropy = dist.entropy()
         return log_probs, entropy
+
+
+class Critic(nn.Module):
+    """Value network that estimates V(s) - expected return from a state."""
+
+    def __init__(self, obs_dim: int, hidden_sizes: list[int]) -> None:
+        super().__init__()
+        # no act_dim param. The output is always 1 (a single value estimate).
+        self.net = mlp([obs_dim] + hidden_sizes + [1])
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        # The squeeze(-1) removes the last dimension. If we pass a batch of 32 observations:
+        # - self.net(obs) returns shape (32, 1)
+        # - .squeeze(-1) makes it (32,)
+        return self.net(obs).squeeze(-1)

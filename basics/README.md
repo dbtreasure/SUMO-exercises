@@ -27,8 +27,8 @@ Learning policy gradient methods by implementing an incremental path:
 | Stage | Algorithm | Status |
 |-------|-----------|--------|
 | 0 | REINFORCE | Done |
-| 1 | REINFORCE + baseline | Next |
-| 2 | A2C | Planned |
+| 1 | REINFORCE + baseline | Done |
+| 2 | A2C | Next |
 | 3 | GAE | Planned |
 | 4 | PPO | Planned |
 

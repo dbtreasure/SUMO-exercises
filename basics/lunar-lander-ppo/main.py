@@ -48,6 +48,7 @@ def main() -> None:
         "train/episode_return",
         "train/episode_length",
         "loss/policy",
+        "loss/value",
         "loss/entropy",
         "misc/entropy",
         "misc/return_mean",

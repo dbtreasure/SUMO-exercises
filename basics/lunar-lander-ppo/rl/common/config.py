@@ -24,6 +24,7 @@ class AlgoConfig(BaseModel):
     name: str = "reinforce"
     gamma: float = 0.99
     lr_actor: float = 0.001
+    lr_critic: float = 0.001
     normalize_returns: bool = True
     entropy_coef: float = 0.0
     max_grad_norm: float | None = None

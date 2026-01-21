@@ -106,8 +106,31 @@ Implemented vanilla REINFORCE (Monte Carlo policy gradient):
   - REINFORCE has high variance because no baseline to compare against
   - Entropy stayed healthy (~1.0), policy loss oscillates around zero (normal)
 
-### Next: Stage 1 (REINFORCE + Baseline)
+### Stage 1: REINFORCE + Baseline (Complete)
 
-Add a value network (critic) to reduce variance:
-- Advantage = return - V(s) instead of raw return
-- Should see smoother learning curves
+Added a Critic network to reduce variance via advantage estimation:
+
+- **Files added/modified:**
+  - `rl/common/nets.py` - Added `Critic` class (value network)
+  - `rl/common/config.py` - Added `lr_critic` to AlgoConfig
+  - `rl/agents/reinforce_baseline.py` - REINFORCE + baseline implementation
+  - `configs/reinforce_baseline.yaml` - 500k steps config
+  - `configs/reinforce_baseline_long.yaml` - 2M steps config
+  - `main.py` - Added `loss/value` to CSV columns
+
+- **Training results (2M steps):**
+  - Peak: +258 eval return at 750k steps (crossed solved threshold)
+  - End: -64 eval return (collapsed in late training)
+  - Still high variance - policy "forgot" good behavior
+
+- **Key learnings:**
+  - Advantage: `A(s,a) = G_t - V(s)` ("how much better than expected?")
+  - Value loss: MSE(V(s), G_t) trains critic to predict returns
+  - One backward pass, two optimizer steps (actor + critic)
+  - Baseline helps early learning but doesn't fix MC variance problem
+
+### Next: Stage 2 (A2C)
+
+Replace Monte Carlo returns with TD bootstrapping:
+- Instead of waiting for episode end, use V(s') estimate
+- Should see more stable learning

@@ -7,8 +7,8 @@ An incremental implementation of policy gradient algorithms for learning purpose
 | Stage | Algorithm | Key Concept | Status |
 |-------|-----------|-------------|--------|
 | 0 | REINFORCE | Monte Carlo returns, policy gradient theorem | Done |
-| 1 | REINFORCE + baseline | Variance reduction with value function | Next |
-| 2 | A2C | TD bootstrapping, online learning | Planned |
+| 1 | REINFORCE + baseline | Variance reduction with value function | Done |
+| 2 | A2C | TD bootstrapping, online learning | Next |
 | 3 | GAE | Lambda-weighted advantage estimation | Planned |
 | 4 | PPO | Clipped objective, minibatches, multiple epochs | Planned |
 
@@ -34,6 +34,8 @@ main.py              # Training entrypoint
 configs/             # YAML configs per algorithm
   reinforce.yaml     # 500k steps, vanilla REINFORCE
   reinforce_long.yaml # 2M steps with entropy bonus
+  reinforce_baseline.yaml      # 500k steps, with value baseline
+  reinforce_baseline_long.yaml # 2M steps, with value baseline
 rl/
   common/            # Shared utilities
     buffers.py       # RolloutBuffer (on-policy storage)
@@ -41,13 +43,14 @@ rl/
     envs.py          # Environment factory
     eval.py          # Evaluation loop
     logger.py        # TensorBoard + CSV logging
-    nets.py          # CategoricalPolicy network
+    nets.py          # CategoricalPolicy, Critic networks
     plot.py          # Training curve visualization
     seeding.py       # Reproducibility
     utils.py         # Normalization helpers
   agents/
     base.py          # Agent ABC
     reinforce.py     # Stage 0 implementation
+    reinforce_baseline.py # Stage 1 implementation
 runs/                # Training outputs (metrics, plots, checkpoints)
 ```
 
@@ -69,6 +72,24 @@ Trained for 500k steps on LunarLander-v2:
 **Why it doesn't solve LunarLander:**
 REINFORCE uses raw returns as the learning signal. Episode A might get +100, Episode B might get -200, even with similar policies. The gradient is too noisy.
 
+## Stage 1 Results: REINFORCE + Baseline
+
+Added a Critic network that estimates V(s). Instead of raw returns, we use advantage: `A(s,a) = G_t - V(s)`.
+
+**Performance (2M steps):**
+- Peak: +258 eval return at 750k steps (crossed solved threshold)
+- End: -64 eval return (collapsed in late training)
+- Still high variance - policy "forgot" good behavior
+
+**What we learned:**
+- Advantage formula: `A(s,a) = G_t - V(s)` ("how much better than expected?")
+- Value loss: MSE between critic's prediction and actual returns
+- One backward pass, two optimizer steps (actor + critic)
+- Baseline helps early learning but doesn't fix late-training instability
+
+**Why it still struggles:**
+Monte Carlo returns (waiting for episode end) have inherent variance. Even with a baseline, the learning signal is noisy. The fix: TD bootstrapping (A2C) - use critic's estimate instead of waiting for full returns.
+
 ## Expected Performance
 
 | Algorithm | Expected Return | Notes |
@@ -78,8 +99,31 @@ REINFORCE uses raw returns as the learning signal. Episode A might get +100, Epi
 | A2C | 150-200 | Faster learning |
 | PPO | 200+ | Stable, sample efficient |
 
+## Historical Context
+
+### REINFORCE (1992)
+
+Ronald J. Williams (1945-2024) published "Simple statistical gradient-following algorithms for connectionist reinforcement learning" in Machine Learning journal. The key insight: you can compute gradients of expected reward using only samples - no model of the environment needed.
+
+The paper presents algorithms that "make weight adjustments in a direction that lies along the gradient of expected reinforcement... without explicitly computing gradient estimates." This is the `∇J = E[log π(a|s) * G_t]` formula - sampling from your policy and weighting by returns naturally produces an unbiased gradient estimate.
+
+Williams was also part of the landmark 1986 backpropagation paper with Rumelhart and Hinton.
+
+### Actor-Critic Origins (1983)
+
+Barto, Sutton, and Anderson's "Neuronlike adaptive elements that can solve difficult learning control problems" introduced two cooperating components:
+
+- **ASE (Associative Search Element)** - the actor, learns the policy
+- **ACE (Adaptive Critic Element)** - the critic, learns to evaluate states
+
+The ACE's purpose: "It adaptively develops an evaluation function that is more informative than the one directly available from the environment. This reduces the uncertainty under which the ASE will learn."
+
+This is exactly what our baseline does - transform sparse episode returns into dense, informative learning signals. The term "critic" predates this paper - Klopf used "learning with a critic" in 1973 to distinguish RL from supervised "learning with a teacher."
+
 ## References
 
+- [Williams 1992 - REINFORCE](https://link.springer.com/article/10.1007/BF00992696)
+- [Barto, Sutton, Anderson 1983 - Actor-Critic](https://ieeexplore.ieee.org/document/6313077)
 - [Policy Gradient Methods (Sutton & Barto Ch. 13)](http://incompleteideas.net/book/the-book.html)
 - [PPO Paper (Schulman et al. 2017)](https://arxiv.org/abs/1707.06347)
 - [GAE Paper (Schulman et al. 2015)](https://arxiv.org/abs/1506.02438)
