@@ -85,8 +85,8 @@ class ReinforceAgent(Agent):
         done = terminated or truncated
         self.buffer.add(obs=obs, action=action, reward=reward, log_prob=info["log_prob"], done=done)
 
-    def update(self) -> dict[str, float]:
-        """Perform REINFORCE update."""
+    def update(self, last_obs: np.ndarray | None = None) -> dict[str, float]:
+        """Perform REINFORCE update. last_obs is unused (MC doesn't bootstrap)."""
 
         # Early exit, don't update if there's nothing in the buffer
         if len(self.buffer) == 0:

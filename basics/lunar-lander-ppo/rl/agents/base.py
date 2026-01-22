@@ -45,13 +45,15 @@ class Agent(ABC):
         ...
 
     @abstractmethod
-    def update(self) -> dict[str, float]:
+    def update(self, last_obs: np.ndarray | None = None) -> dict[str, float]:
         """Perform a learning update.
 
         update() vs on_episode_end(): This is the key flexibility.
         REINFORCE calls update() inside on_episode_end() (needs full episode).
-        PPO calls update() every N steps. The main loop just calls both at appropriate times.
+        A2C/PPO call update() every N steps with last_obs for bootstrapping.
 
+        :param last_obs - For A2C/PPO: the observation after the rollout, used
+            to bootstrap V(s_n). REINFORCE ignores this parameter.
         :return (losses, etc.) - Dictionary of losses and other metrics
         """
         ...

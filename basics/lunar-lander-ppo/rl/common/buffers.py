@@ -96,6 +96,30 @@ class RolloutBuffer:
 
         return returns
 
+    def compute_returns_td(self, gamma: float, last_value: float) -> np.ndarray:
+        """
+        Compute n-step TD returns with bootstrapping.
+
+        Like compute_returns, but instead of waiting for episode end,
+        we bootstrap from the critic's estimate of the final state.
+
+        G_t = r_t + γ*r_{t+1} + ... + γ^{n-1}*r_{t+n-1} + γ^n * V(s_{t+n})
+
+        :param gamma - discount factor
+        :param last_value - V(s_{t+n}), critic's estimate of state after rollout
+        :return - n-step TD returns
+        """
+        returns = np.zeros(len(self.obs), dtype=np.float32)
+        running_return = last_value
+
+        for t in reversed(range(len(self.rewards))):
+            if self.dones[t]:
+                running_return = 0.0  # Terminal state has no future value
+            running_return = self.rewards[t] + gamma * running_return
+            returns[t] = running_return
+
+        return returns
+
     def get(self) -> dict[str, torch.Tensor]:
         """Return all data as tensors for the update step."""
 

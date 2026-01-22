@@ -8,8 +8,8 @@ An incremental implementation of policy gradient algorithms for learning purpose
 |-------|-----------|-------------|--------|
 | 0 | REINFORCE | Monte Carlo returns, policy gradient theorem | Done |
 | 1 | REINFORCE + baseline | Variance reduction with value function | Done |
-| 2 | A2C | TD bootstrapping, online learning | Next |
-| 3 | GAE | Lambda-weighted advantage estimation | Planned |
+| 2 | A2C | TD bootstrapping, n-step returns | Done |
+| 3 | GAE | Lambda-weighted advantage estimation | Next |
 | 4 | PPO | Clipped objective, minibatches, multiple epochs | Planned |
 
 ## Quick Start
@@ -36,6 +36,9 @@ configs/             # YAML configs per algorithm
   reinforce_long.yaml # 2M steps with entropy bonus
   reinforce_baseline.yaml      # 500k steps, with value baseline
   reinforce_baseline_long.yaml # 2M steps, with value baseline
+  a2c.yaml           # 500k steps, n-step TD
+  a2c_long.yaml      # 2M steps, n-step TD
+  a2c_entropy05.yaml # 2M steps, higher entropy for stability
 rl/
   common/            # Shared utilities
     buffers.py       # RolloutBuffer (on-policy storage)
@@ -51,6 +54,7 @@ rl/
     base.py          # Agent ABC
     reinforce.py     # Stage 0 implementation
     reinforce_baseline.py # Stage 1 implementation
+    a2c.py           # Stage 2 implementation
 runs/                # Training outputs (metrics, plots, checkpoints)
 ```
 
@@ -90,13 +94,35 @@ Added a Critic network that estimates V(s). Instead of raw returns, we use advan
 **Why it still struggles:**
 Monte Carlo returns (waiting for episode end) have inherent variance. Even with a baseline, the learning signal is noisy. The fix: TD bootstrapping (A2C) - use critic's estimate instead of waiting for full returns.
 
+## Stage 2 Results: A2C
+
+Replaced Monte Carlo returns with n-step TD bootstrapping. Instead of waiting for episode end, we look ahead n steps then bootstrap from the critic's estimate.
+
+**Performance (2M steps):**
+
+| Config | Peak Eval | Final Eval | Times > 200 |
+|--------|-----------|------------|-------------|
+| entropy=0.01 | 255.9 +/- 9.5 | 29.8 +/- 119.3 | 4 |
+| entropy=0.05 | 241.5 +/- 47.4 | 132.0 +/- 102.0 | 9 |
+
+**Key finding: Entropy coefficient matters.** With entropy=0.01, A2C learns fast but collapses hard - the policy becomes too deterministic (entropy drops to ~0.3) and "forgets" good behavior. With entropy=0.05, the policy maintains more exploration and is 4x more stable at end of training.
+
+**What we learned:**
+- N-step TD formula: `G_t = r_t + γr_{t+1} + ... + γ^{n-1}r_{t+n-1} + γ^n V(s_{t+n})`
+- Bootstrapping trades variance for bias - faster learning but relies on critic accuracy
+- A2C updates every n_steps (5) vs. per-episode for REINFORCE
+- More frequent updates → policy commits faster → needs entropy bonus to maintain exploration
+
+**Why it still struggles:**
+All algorithms so far can reach 200+ but can't stay there. The policy takes large gradient steps that overshoot, then struggles to recover. PPO's clipped objective limits how much the policy can change per update, preventing these collapses.
+
 ## Expected Performance
 
 | Algorithm | Expected Return | Notes |
 |-----------|-----------------|-------|
 | REINFORCE | -50 to +50 | High variance, doesn't solve |
-| REINFORCE+baseline | 100-180 | Reduced variance |
-| A2C | 150-200 | Faster learning |
+| REINFORCE+baseline | 50-130 | Reduced variance, still unstable |
+| A2C | 130-170 | Faster learning, entropy tuning helps |
 | PPO | 200+ | Stable, sample efficient |
 
 ## Historical Context
@@ -142,6 +168,42 @@ advantage = r_0 + γr_1 + ... + γ^(n-1)r_{n-1} + γ^n V(s_n) - V(s_0)
 ```
 
 Look ahead n steps, then bootstrap from the critic. This reduces variance at the cost of some bias.
+
+## Bugs & Lessons Learned
+
+### The Silent Critic Bug (Fixed after commit `8cd23ea`)
+
+**Symptom:** A2C training showed eval returns of -700 to -900 instead of learning. Policy loss was near zero.
+
+**Root Cause:** The critic had zero gradient flow. We computed values during `act()` under `torch.no_grad()` and stored them as Python scalars:
+
+```python
+# In act() - values computed with no gradient tracking
+with torch.no_grad():
+    value = self.critic(obs_tensor).item()  # Scalar, no grad history
+
+# In update() - using stored values for loss
+value_loss = ((data["values"] - returns_tensor) ** 2).mean()
+# ^^^ This tensor has NO connection to self.critic!
+# loss.backward() computes nothing for the critic
+```
+
+The value loss was computed but `loss.backward()` produced no gradients for the critic network. The critic never learned, so advantages were meaningless noise.
+
+**The Fix:** Recompute fresh value predictions during `update()`:
+
+```python
+# In update() - recompute values WITH gradients
+values_pred = self.critic(data["obs"]).squeeze(-1)  # Fresh forward pass
+value_loss = ((values_pred - returns_tensor) ** 2).mean()
+# ^^^ Now gradients flow back through self.critic
+```
+
+**Lesson:** When debugging RL, check that gradients actually flow where you expect. A loss being computed doesn't mean anything is learning. The stored values are still useful for computing advantage (no gradients needed there), but the value loss needs fresh predictions.
+
+**Results after fix:**
+- A2C: Episodes reaching 200+ returns within 300k steps
+- REINFORCE+baseline: Eval improved from -722 → +11 by 450k steps
 
 ## References
 

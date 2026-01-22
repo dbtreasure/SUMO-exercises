@@ -28,6 +28,7 @@ class AlgoConfig(BaseModel):
     normalize_returns: bool = True
     entropy_coef: float = 0.0
     max_grad_norm: float | None = None
+    n_steps: int = 5  # Rollout length for n-step TD (A2C/PPO)
 
 
 class Config(BaseModel):

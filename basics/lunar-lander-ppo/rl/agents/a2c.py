@@ -10,8 +10,8 @@ from rl.common.nets import CategoricalPolicy, Critic
 from rl.common.utils import normalize
 
 
-class ReinforceBaselineAgent(Agent):
-    """REINFORCE with baseline (value function) for variance reduction."""
+class A2CAgent(Agent):
+    """Advantage Actor-Critic with n-step TD returns."""
 
     def __init__(self, obs_dim: int, act_dim: int, config: Config) -> None:
         """Initialize the agent.
@@ -28,6 +28,8 @@ class ReinforceBaselineAgent(Agent):
         self.entropy_coef = config.algo.entropy_coef
         # For gradient clipping. None means no clipping.
         self.max_grad_norm = config.algo.max_grad_norm
+        # Number of steps to look ahead for n-step returns.
+        self.n_steps = config.algo.n_steps
 
         # Our neural network that maps obs -> action distribution
         self.policy = CategoricalPolicy(obs_dim, act_dim, config.model.hidden_sizes)
@@ -102,19 +104,34 @@ class ReinforceBaselineAgent(Agent):
         )
 
     def update(self, last_obs: np.ndarray | None = None) -> dict[str, float]:
-        """Perform REINFORCE + baseline update. last_obs is unused (MC doesn't bootstrap).
+        """Perform A2C update with n-step TD returns.
 
-        Key difference from vanilla REINFORCE: we use advantage (return - value)
-        instead of raw returns. This dramatically reduces variance because we're
-        asking "how much better than expected?" rather than "how good absolutely?"
+        Key difference from REINFORCE + baseline: instead of waiting for episode
+        end (Monte Carlo), we bootstrap from the critic's estimate of the final
+        state. This reduces variance at the cost of some bias.
+
+        Called every n_steps from the training loop, not at episode end.
+
+        :param last_obs - The observation after the rollout (s_{t+n}), used to
+            get V(s_{t+n}) for computing n-step returns.
         """
+
+        # A2C requires last_obs for bootstrapping
+        if last_obs is None:
+            raise ValueError("A2C.update() requires last_obs for bootstrapping")
 
         # Early exit, don't update if there's nothing in the buffer
         if len(self.buffer) == 0:
             return {}
 
-        # Compute Monte Carlo returns G_t = sum of discounted future rewards
-        returns = self.buffer.compute_returns(self.gamma)
+        # Get V(s_n) for bootstrapping - the critic's estimate of the state after rollout
+        with torch.no_grad():
+            last_obs_tensor = torch.tensor(last_obs, dtype=torch.float32).unsqueeze(0)
+            last_value = self.critic(last_obs_tensor).item()
+
+        # N-step TD returns with bootstrapping
+        # G_t = r_t + γr_{t+1} + ... + γ^{n-1}r_{t+n-1} + γ^n V(s_{t+n})
+        returns = self.buffer.compute_returns_td(self.gamma, last_value)
         returns_tensor = torch.tensor(returns, dtype=torch.float32)
 
         data = self.buffer.get()
@@ -180,15 +197,8 @@ class ReinforceBaselineAgent(Agent):
         }
 
     def on_episode_end(self) -> dict[str, float]:
-        """Perform update at the end of each episode.
-
-        Why not just call update() directly in the training loop?
-        The training loop doesn't know when to call update - that's
-        algorithm specific:
-            - REINFORCE: Update per episode (here)
-            - A2C/PPO: Update every N steps (in the main loop, not in on_episode_end)
-        """
-        return self.update()
+        """A2C updates every n_steps, not per episode. Returns empty dict."""
+        return {}
 
     def save(self, path: str) -> None:
         """Save policy and critic weights to disk."""

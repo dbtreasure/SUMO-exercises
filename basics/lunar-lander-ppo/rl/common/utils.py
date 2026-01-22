@@ -22,4 +22,5 @@ def normalize(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
         (std=0), we'd divide by zero. Adding a tiny epsilon prevents that edge case.
     """
 
-    return (x - x.mean()) / (x.std() + eps)
+    # Use unbiased=False for small batches (avoids division by n-1 which fails for n=1)
+    return (x - x.mean()) / (x.std(unbiased=False) + eps)

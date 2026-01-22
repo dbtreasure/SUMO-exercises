@@ -59,6 +59,10 @@ def main() -> None:
     total_steps = 0
     episode = 0
 
+    # Determine update mode: step-based (A2C/PPO) vs episode-based (REINFORCE)
+    step_based_update = config.algo.name in ["a2c", "ppo"]
+    rollout_step = 0  # Counter for step-based updates
+
     print(f"Starting training: {config.algo.name}")
     print(f"Run directory: {run_dir}")
     print(f"Total steps: {config.train.total_steps:,}")
@@ -85,6 +89,17 @@ def main() -> None:
             # Store transition
             agent.observe(obs, action, float(reward), next_obs, terminated, truncated, info)
 
+            # Step-based update (A2C/PPO): update every n_steps
+            if step_based_update:
+                rollout_step += 1
+                if rollout_step >= config.algo.n_steps:
+                    # next_obs is the state after the rollout - use for bootstrapping
+                    update_info = agent.update(next_obs)
+                    rollout_step = 0
+                    # Log update (but not too frequently)
+                    if total_steps % config.train.log_every_steps < config.algo.n_steps:
+                        logger.log(update_info, step=total_steps)
+
             # Track episode stats
             obs = next_obs
             episode_return += float(reward)
@@ -108,7 +123,14 @@ def main() -> None:
 
         # Episode finished
         episode += 1
-        update_info = agent.on_episode_end()
+
+        # For step-based agents: update with remaining data if episode ended mid-rollout
+        if step_based_update and rollout_step > 0:
+            update_info = agent.update(obs)  # obs is final state
+            rollout_step = 0
+        else:
+            # Episode-based agents (REINFORCE): update at episode end
+            update_info = agent.on_episode_end()
 
         # Log episode stats
         if episode % 10 == 0:  # Log every 10 episodes to reduce noise
