@@ -120,10 +120,36 @@ The ACE's purpose: "It adaptively develops an evaluation function that is more i
 
 This is exactly what our baseline does - transform sparse episode returns into dense, informative learning signals. The term "critic" predates this paper - Klopf used "learning with a critic" in 1973 to distinguish RL from supervised "learning with a teacher."
 
+### TD Bootstrapping (1988)
+
+Richard Sutton's "Learning to Predict by the Methods of Temporal Differences" formalized a key idea: instead of waiting for episode end (Monte Carlo), update value estimates based on *other value estimates*:
+
+- **Monte Carlo**: `V(s) ← actual return G_t` (wait for episode end)
+- **TD(0)**: `V(s) ← r + γV(s')` (bootstrap from next state's estimate)
+
+Sutton proved this converges and is more sample-efficient. The idea traces back to Samuel's 1959 checker player, but Sutton's 1988 paper made it rigorous. TD is the foundation for Q-learning, DQN, and all actor-critic methods.
+
+### A3C and A2C (2016-2017)
+
+**Volodymyr Mnih** (PhD under Hinton, lead author of DQN) and the DeepMind team published "Asynchronous Methods for Deep Reinforcement Learning" (2016), introducing **A3C** - multiple parallel workers running environments asynchronously, sending gradients to a shared parameter server. The parallelism decorrelates training data, eliminating the need for replay buffers.
+
+**OpenAI** later released **A2C** in their Baselines library - a synchronous variant that waits for all workers before updating. Their finding: "We have not seen any evidence that the noise introduced by asynchrony provides any performance benefit." A2C is simpler and uses GPUs more effectively.
+
+The key innovation over REINFORCE + baseline: **n-step TD returns** instead of Monte Carlo. Instead of waiting for episode end:
+
+```
+advantage = r_0 + γr_1 + ... + γ^(n-1)r_{n-1} + γ^n V(s_n) - V(s_0)
+```
+
+Look ahead n steps, then bootstrap from the critic. This reduces variance at the cost of some bias.
+
 ## References
 
 - [Williams 1992 - REINFORCE](https://link.springer.com/article/10.1007/BF00992696)
 - [Barto, Sutton, Anderson 1983 - Actor-Critic](https://ieeexplore.ieee.org/document/6313077)
+- [Sutton 1988 - TD Learning](http://incompleteideas.net/papers/sutton-88-with-erratum.pdf)
+- [Mnih et al. 2016 - A3C](https://arxiv.org/abs/1602.01783)
+- [OpenAI Baselines: A2C](https://openai.com/index/openai-baselines-acktr-a2c/)
 - [Policy Gradient Methods (Sutton & Barto Ch. 13)](http://incompleteideas.net/book/the-book.html)
 - [PPO Paper (Schulman et al. 2017)](https://arxiv.org/abs/1707.06347)
 - [GAE Paper (Schulman et al. 2015)](https://arxiv.org/abs/1506.02438)
