@@ -120,6 +120,65 @@ class RolloutBuffer:
 
         return returns
 
+    def compute_returns_gae(self, gamma: float, gae_lambda: float, last_value: float) -> np.ndarray:
+        """
+        GAE: Blend ALL possible horizons with exponential decay.
+
+        :param gamma - discount factor
+        :param gae_lambda - lambda for GAE (0=TD, 1=MC)
+        :param last_value - V(s_{t+n}), critic's estimate of state after rollout
+        :return - GAE advantages
+        """
+        advantages = np.zeros(len(self.obs), dtype=np.float32)
+        running_advantage = 0.0
+
+        for t in reversed(range(len(self.rewards))):
+            # The TD Residual (delta):
+            # - reward I got + discounted value of where I ended up - value of where I started
+            is_last_timestep = t == len(self.rewards) - 1
+
+            # We need next_value to compute delta, but "next" means different things:
+            #   - Episode ended → no next state exists → 0.0
+            #   - Last step in our buffer → we don't have the value stored → ask critic via last_value
+            #   - Normal case → we stored it → self.values[t + 1]
+            if self.dones[t]:
+                next_value = 0.0
+            elif is_last_timestep:
+                next_value = last_value
+            else:
+                next_value = self.values[t + 1]
+
+            # This is the 1-step advantage estimate:
+            # "I was in state s_t, expected value V(s_t).
+            # I took an action, got reward r_t, ended up in s_{t+1} worth V(s_{t+1}).
+            # Was that good?"
+            # - If delta > 0: "Better than expected" (reinforce this action)
+            # - If delta < 0: "Worse than expected" (discourage this action)
+            delta = self.rewards[t] + gamma * next_value - self.values[t]
+
+            # This is where GAE differs from A2C.
+            # Instead of just using delta (1-step) or waiting for the full return (Monte Carlo),
+            #  we're blending:
+            #   A_t = δ_t + (γλ)δ_{t+1} + (γλ)²δ_{t+2} + ...
+            # Because we loop backwards, running_advantage already contains the weighted sum of all future deltas.
+            # We just add our current delta and decay what came before by γλ.
+            #   - λ = 0: Only use δ_t (pure 1-step TD, high bias)
+            #   - λ = 1: Sum all deltas (equivalent to Monte Carlo, high variance)
+            #   - λ = 0.95: Nearby deltas matter most, distant ones fade out
+            running_advantage = delta + gamma * gae_lambda * running_advantage
+            advantages[t] = running_advantage
+
+            if self.dones[t]:
+                running_advantage = 0.0  # Terminal state has no future value
+
+        # Why "Advantages" Not "Returns"?
+        #   Notice we're returning advantages, not returns. In A2C we computed returns then
+        #   subtracted baseline:
+        #       advantages = returns - values
+        #   With GAE, we compute advantages directly - the delta already has - V(s_t) baked in.
+        #   The agent will use these advantages directly in the policy loss, no subtraction needed.
+        return advantages
+
     def get(self) -> dict[str, torch.Tensor]:
         """Return all data as tensors for the update step."""
 

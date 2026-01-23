@@ -59,8 +59,8 @@ def main() -> None:
     total_steps = 0
     episode = 0
 
-    # Determine update mode: step-based (A2C/PPO) vs episode-based (REINFORCE)
-    step_based_update = config.algo.name in ["a2c", "ppo"]
+    # Determine update mode: step-based (A2C/PPO/GAE) vs episode-based (REINFORCE)
+    step_based_update = config.algo.name in ["a2c", "ppo", "gae"]
     rollout_step = 0  # Counter for step-based updates
 
     print(f"Starting training: {config.algo.name}")

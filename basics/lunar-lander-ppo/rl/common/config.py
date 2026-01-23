@@ -29,6 +29,7 @@ class AlgoConfig(BaseModel):
     entropy_coef: float = 0.0
     max_grad_norm: float | None = None
     n_steps: int = 5  # Rollout length for n-step TD (A2C/PPO)
+    gae_lambda: float = 0.95  # Lambda for GAE (0=TD, 1=MC)
 
 
 class Config(BaseModel):

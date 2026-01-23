@@ -129,8 +129,52 @@ Added a Critic network to reduce variance via advantage estimation:
   - One backward pass, two optimizer steps (actor + critic)
   - Baseline helps early learning but doesn't fix MC variance problem
 
-### Next: Stage 2 (A2C)
+### Stage 2: A2C (Complete)
 
-Replace Monte Carlo returns with TD bootstrapping:
-- Instead of waiting for episode end, use V(s') estimate
-- Should see more stable learning
+Replaced Monte Carlo returns with n-step TD bootstrapping:
+
+- **Files added/modified:**
+  - `rl/common/buffers.py` - Added `compute_returns_td()` for n-step returns
+  - `rl/common/config.py` - Added `n_steps` to AlgoConfig
+  - `rl/agents/a2c.py` - A2C implementation with step-based updates
+  - `configs/a2c.yaml`, `configs/a2c_long.yaml` - A2C configs
+  - `main.py` - Added step-based update mode
+
+- **Training results (2M steps):**
+  - Peak: 255.9 +/- 9.5 (entropy=0.01), 241.5 +/- 47.4 (entropy=0.05)
+  - End: 29.8 (entropy=0.01), 132.0 (entropy=0.05)
+  - Entropy coefficient critical for stability
+
+- **Key learnings:**
+  - N-step TD: `G_t = r_t + γr_{t+1} + ... + γ^{n-1}r_{t+n-1} + γ^n V(s_{t+n})`
+  - Bootstrapping trades variance for bias
+  - Step-based updates (every n_steps) vs episode-based (REINFORCE)
+
+### Stage 3: GAE (Complete)
+
+Replaced fixed n-step returns with Generalized Advantage Estimation:
+
+- **Files added/modified:**
+  - `rl/common/buffers.py` - Added `compute_returns_gae()` for λ-weighted advantages
+  - `rl/common/config.py` - Added `gae_lambda` to AlgoConfig
+  - `rl/agents/gae.py` - GAE agent implementation
+  - `configs/gae.yaml`, `configs/gae_long.yaml` - GAE configs
+  - `main.py` - Added "gae" to step-based update list
+
+- **Training results (2M steps):**
+  - Peak: 241.0 +/- 31.1 at 1.85M steps
+  - Times > 200: 8
+  - Final: 84.7 +/- 123.7 (still unstable)
+
+- **Key learnings:**
+  - GAE formula: `A_t = δ_t + (γλ)δ_{t+1} + (γλ)²δ_{t+2} + ...`
+  - λ=0 is TD (high bias), λ=1 is MC (high variance), λ=0.95 is the sweet spot
+  - Computes advantages directly - no separate `returns - values` step
+  - Smoother advantages but doesn't fix policy instability
+
+### Next: Stage 4 (PPO)
+
+Add clipped surrogate objective to prevent large policy updates:
+- Clip ratio `r = π_new/π_old` to [1-ε, 1+ε]
+- Multiple epochs over same batch
+- Minibatch updates for efficiency

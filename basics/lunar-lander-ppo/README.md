@@ -9,8 +9,8 @@ An incremental implementation of policy gradient algorithms for learning purpose
 | 0 | REINFORCE | Monte Carlo returns, policy gradient theorem | Done |
 | 1 | REINFORCE + baseline | Variance reduction with value function | Done |
 | 2 | A2C | TD bootstrapping, n-step returns | Done |
-| 3 | GAE | Lambda-weighted advantage estimation | Next |
-| 4 | PPO | Clipped objective, minibatches, multiple epochs | Planned |
+| 3 | GAE | Lambda-weighted advantage estimation | Done |
+| 4 | PPO | Clipped objective, minibatches, multiple epochs | Next |
 
 ## Quick Start
 
@@ -39,6 +39,8 @@ configs/             # YAML configs per algorithm
   a2c.yaml           # 500k steps, n-step TD
   a2c_long.yaml      # 2M steps, n-step TD
   a2c_entropy05.yaml # 2M steps, higher entropy for stability
+  gae.yaml           # 500k steps, GAE
+  gae_long.yaml      # 2M steps, GAE
 rl/
   common/            # Shared utilities
     buffers.py       # RolloutBuffer (on-policy storage)
@@ -55,6 +57,7 @@ rl/
     reinforce.py     # Stage 0 implementation
     reinforce_baseline.py # Stage 1 implementation
     a2c.py           # Stage 2 implementation
+    gae.py           # Stage 3 implementation
 runs/                # Training outputs (metrics, plots, checkpoints)
 ```
 
@@ -116,6 +119,30 @@ Replaced Monte Carlo returns with n-step TD bootstrapping. Instead of waiting fo
 **Why it still struggles:**
 All algorithms so far can reach 200+ but can't stay there. The policy takes large gradient steps that overshoot, then struggles to recover. PPO's clipped objective limits how much the policy can change per update, preventing these collapses.
 
+## Stage 3 Results: GAE
+
+Replaced A2C's fixed n-step returns with Generalized Advantage Estimation - an exponentially-weighted blend of all possible n-step estimates.
+
+**Performance (2M steps):**
+
+| Config | Peak Eval | Final Eval | Times > 200 |
+|--------|-----------|------------|-------------|
+| λ=0.95, entropy=0.01 | 241.0 +/- 31.1 | 84.7 +/- 123.7 | 8 |
+
+**What we learned:**
+- GAE formula: `A_t = δ_t + (γλ)δ_{t+1} + (γλ)²δ_{t+2} + ...` where `δ_t = r_t + γV(s_{t+1}) - V(s_t)`
+- λ=0 gives pure TD (high bias, low variance), λ=1 gives Monte Carlo (low bias, high variance)
+- λ=0.95 is the standard choice - smooth blend of all horizons
+- GAE computes advantages directly (no separate `returns - values` step)
+
+**Comparison with A2C:**
+- Peak performance similar (241 vs 242-256)
+- More times above 200 than A2C with entropy=0.01 (8 vs 4)
+- Still suffers from late-training instability
+
+**Why it still struggles:**
+GAE gives smoother advantage estimates but doesn't limit *how much* the policy can change. Large gradient steps still cause the policy to overshoot and "forget" good behavior. That's what PPO's clipped objective addresses.
+
 ## Expected Performance
 
 | Algorithm | Expected Return | Notes |
@@ -123,6 +150,7 @@ All algorithms so far can reach 200+ but can't stay there. The policy takes larg
 | REINFORCE | -50 to +50 | High variance, doesn't solve |
 | REINFORCE+baseline | 50-130 | Reduced variance, still unstable |
 | A2C | 130-170 | Faster learning, entropy tuning helps |
+| GAE | 130-170 | Smoother advantages, similar stability to A2C |
 | PPO | 200+ | Stable, sample efficient |
 
 ## Historical Context
@@ -168,6 +196,88 @@ advantage = r_0 + γr_1 + ... + γ^(n-1)r_{n-1} + γ^n V(s_n) - V(s_0)
 ```
 
 Look ahead n steps, then bootstrap from the critic. This reduces variance at the cost of some bias.
+
+### GAE: Generalized Advantage Estimation (2015)
+
+**The Paper & Authors**
+
+"High-Dimensional Continuous Control Using Generalized Advantage Estimation" was submitted to arXiv in June 2015 and published at ICLR 2016. The authors:
+
+- **John Schulman** (lead author) - PhD student at Berkeley under Pieter Abbeel
+- **Philipp Moritz** - Berkeley, later co-created Ray/RLlib
+- **Sergey Levine** - Berkeley robotics, now professor
+- **Michael I. Jordan** - Berkeley ML legend
+- **Pieter Abbeel** - Schulman's advisor, robotics/RL pioneer
+
+**John Schulman's Journey**
+
+Schulman's path is remarkable: Caltech physics (2010) → Berkeley PhD in robotics/RL → co-founded OpenAI in December 2015 (while still finishing his PhD) → invented TRPO, GAE, and PPO → led RLHF development for ChatGPT → joined Anthropic (August 2024) → now Chief Scientist at Thinking Machines Lab (February 2025).
+
+He's often called the "architect of ChatGPT" - his PPO algorithm became the backbone of RLHF training. GAE was a stepping stone: TRPO (2015) → GAE (2015) → PPO (2017).
+
+**The Core Insight: λ-Weighted Advantage**
+
+GAE builds directly on Richard Sutton's TD(λ) from 1988. Sutton showed you can interpolate between:
+- **TD(0)**: Bootstrap immediately from V(s') - low variance, high bias
+- **Monte Carlo**: Wait for full return - high variance, low bias
+
+GAE applies this to advantage estimation:
+
+```
+λ=0:    A_t = r_t + γV(s_{t+1}) - V(s_t)    # 1-step TD (like A2C with n=1)
+λ=1:    A_t = G_t - V(s_t)                   # Monte Carlo (like REINFORCE+baseline)
+λ=0.95: Exponentially-weighted blend of all n-step estimates
+```
+
+The formula:
+```
+A_t^GAE = Σ_{l=0}^{∞} (γλ)^l δ_{t+l}
+where δ_t = r_t + γV(s_{t+1}) - V(s_t)
+```
+
+**What Problem It Solved**
+
+The paper tackled high-dimensional continuous control - robotic locomotion tasks like walking, running, swimming. These have:
+- Long horizons (thousands of steps)
+- Dense rewards
+- Need for sample efficiency
+
+With λ=0.95-0.99, GAE gave stable learning on tasks that pure MC or TD struggled with.
+
+**Still Used Today?**
+
+Absolutely. GAE is the default in virtually every modern PPO implementation:
+- Stable Baselines3: `gae_lambda=0.95` default
+- CleanRL, RLlib, TRL (Hugging Face)
+- All RLHF systems for LLMs use PPO+GAE
+
+Even newer algorithms like GRPO (DeepSeek) are compared against PPO+GAE as the baseline.
+
+**How It Builds on Our A2C**
+
+Our A2C uses fixed n-step returns (n=5):
+```
+G_t = r_t + γr_{t+1} + ... + γ^4 r_{t+4} + γ^5 V(s_{t+5})
+```
+
+GAE instead computes a weighted average of ALL possible n-step estimates:
+```
+A_t^GAE = (1-λ)(A_t^(1) + λA_t^(2) + λ²A_t^(3) + ...)
+```
+
+This smooths out the advantage estimates - instead of hard-cutoff at n steps, you get exponential decay.
+
+**Predicted Impact on Our Results**
+
+| Issue | A2C Problem | GAE Solution |
+|-------|-------------|--------------|
+| Noisy advantages | Fixed n=5 cutoff is arbitrary | Smooth λ-weighted blend |
+| Variance spikes | Single n-step estimate | Averaged over all horizons |
+| Bias from critic | Only bootstraps at step n | Balances bootstrap vs MC |
+
+Expected: More stable learning curves, less dramatic collapses. The λ parameter gives us a tuning knob (like entropy_coef did). Typical values: λ=0.95-0.99.
+
+GAE alone won't solve our stability problem (that's PPO's clipped objective), but it should give smoother advantage estimates that help the policy make more consistent updates.
 
 ## Bugs & Lessons Learned
 

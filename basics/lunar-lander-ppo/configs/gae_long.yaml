@@ -1,0 +1,25 @@
+env:
+  id: "LunarLander-v2"
+
+seed: 123
+
+train:
+  total_steps: 2_000_000
+  eval_every_steps: 25_000
+  eval_episodes: 10
+  log_every_steps: 1_000
+
+model:
+  hidden_sizes: [64, 64]
+  activation: "tanh"
+
+algo:
+  name: "gae"
+  gamma: 0.99
+  lr_actor: 0.001
+  lr_critic: 0.001
+  normalize_returns: true
+  entropy_coef: 0.01
+  max_grad_norm: 0.5
+  n_steps: 5
+  gae_lambda: 0.95
